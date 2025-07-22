@@ -1,0 +1,443 @@
+---
+title: "Serological and transcriptome response of African fruit bats to immune challenge with recombinant vaccines expressing Ebola or Nipah virus antigens. Supplementary Results (serology)"
+author: "Elinor Jax et al."
+output:
+  pdf_document:
+    toc: TRUE
+    number_sections: TRUE
+---
+
+Last updated: `r Sys.Date()`
+
+```{r init, warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(readxl)
+library(nlme)
+library(GGally)
+
+knitr::opts_chunk$set(echo = F, comment=NULL, message=FALSE)
+```
+
+# Data description
+
+## General notes
+
+Quality control: Luminex samples with 100 beads or fewer are flagged (`QC` = F).
+
+MFI values of 0.0 are changed to 1.0 to allow log-transformation.
+
+```{r}
+.Year. = "2017"
+.Bead.QC. = 100
+NiG.cutoff <- 500
+
+bat.main.samples <- read_excel("Clean_Data.xlsx",sheet = 1, na = c("NO TUBE")) %>%
+	select(-c(1,5,6,7,13)) %>%
+	mutate(
+		Sample_ID = paste(SamplingDate,str_pad(SampleID,2,"left","0"),sep="-"),
+		Date = as.Date(paste(Year,str_sub(SamplingDate,1,2),str_sub(SamplingDate,3,4),sep="-")), 
+		Bat_ID = as.character(BatID_last7),
+		.keep="unused")
+```
+
+```{r}
+bat.prime <- bat.main.samples %>% filter(Comments=="PRIMOVACCINATION") %>% select(Bat_ID,Date) %>% rename(Prime=Date)
+bat.boost <- bat.main.samples %>% filter(str_detect(Comments,fixed("BOOST"))) %>% select(Bat_ID,Date) %>% rename(Boost=Date)
+
+bat.main.table <- bat.main.samples %>% group_by(Bat_ID) %>% summarise(
+	Bat_ID = first(Bat_ID),
+	Species = first(Species),
+	Vaccination_Group = last(Vaccination_Group),
+	Samples = n(),
+	First_Date = min(Date),
+	Last_Date = max(Date),
+	Experiment = "Main"
+	) %>% 
+	left_join(bat.prime,by = "Bat_ID") %>%
+	left_join(bat.boost,by = "Bat_ID")
+```
+
+
+## Luminex data
+
+
+```{r}
+bat.all.table <- bat.main.table
+bat.samples.key <- bat.main.samples %>% select(Sample_ID,Bat_ID)
+```
+
+```{r}
+luminex.all.data <- read_excel("Data_Luminex_2018.xlsx",na = c("NaN")) %>% 
+	transmute(
+		Sample_ID = Sample,
+		Control = Sample_ID=="NSC",
+		Date = sapply(Sample, function(x){
+			if(x=="NSC") NA else
+			as.Date(paste(.Year.,str_sub(x,1,4),sep=""),format="%Y%m%d")
+		}) %>% as.Date(origin="1970-01-01"),
+		Ebola = A33_Ebola,
+		Marburg = sapply(A37, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Nipah_G = sapply(A42_NiG, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Nipah_F = sapply(A44, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Hendra_G = sapply(A46, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Hendra_F = sapply(A43, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Cedar_G = sapply(A53, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Cedar_F = sapply(A35, function(x){if(is.na(x)) NA else if(x < 1) 1 else x}),
+		Beads = Bead_count,
+		QC = Bead_count > .Bead.QC.,
+	) %>%
+	left_join(bat.samples.key, by = "Sample_ID") %>%
+	left_join(bat.all.table %>% select(-contains("Date"),-"Samples"),by="Bat_ID")
+
+```
+
+
+```{r}
+ggplot(luminex.all.data %>% pivot_longer(4:11,names_to="Antigen", values_to="MFI") %>% mutate(Sample=factor(QC+2*Control, labels=c("Low count","Bat","Control")))) + 
+	geom_histogram(aes(x=log10(MFI), fill=Sample), breaks=0.1*(1:39), na.rm=T) +
+	facet_wrap(vars(Antigen))
+```
+
+```{r}
+luminex.meanlog <- luminex.all.data %>% filter(!Control & !is.na(Nipah_G)) %>% group_by(Sample_ID) %>% 
+	summarise(
+		Date = min(Date),
+		Bat_ID = first(Bat_ID),
+		Species= first(Species),
+		Experiment = first(Experiment),
+		Treatment = first(Vaccination_Group),
+		Nipah_G_meanlog = mean(log10(Nipah_G)), 
+		Nipah_G_difflog = (log10(max(Nipah_G)/min(Nipah_G))),
+		Ebola_meanlog = mean(log10(Ebola)), 
+		Ebola_difflog = (log10(max(Ebola)/min(Ebola)))
+	)
+
+luminex.all.meanlog <- luminex.all.data %>% 
+	pivot_longer(4:11,names_to="Antigen", values_to="MFI") %>%
+	filter(!Control & !is.na(MFI)) %>% 
+	group_by(Sample_ID, Antigen) %>% 
+	summarise(
+		Date = min(Date),
+		Bat_ID = first(Bat_ID),
+		Species= first(Species),
+		Experiment = first(Experiment),
+		Treatment = first(Vaccination_Group),
+		Antigen = first(Antigen),
+		MFI_meanlog = mean(log10(MFI)), 
+		MFI_difflog = (log10(max(MFI)/min(MFI)))
+	)
+
+```
+
+
+## Time series - all antigens
+
+```{r, fig.height=12}
+ggplot(luminex.all.meanlog %>% filter(Experiment=="Main" & Species=="Eidolon_helvum" & !is.na(Treatment))) +
+	geom_vline(xintercept = as.Date("2017-07-10"), col=grey(0.7)) +
+	geom_vline(xintercept = as.Date("2017-08-07"), col=grey(0.7)) + 
+	geom_line(aes(x=Date,y=MFI_meanlog,color=Bat_ID),show.legend = F) + 
+	geom_linerange(aes(x=Date,ymin=MFI_meanlog - MFI_difflog/2, ymax=MFI_meanlog + MFI_difflog/2,color=Bat_ID),show.legend = F) +
+	facet_grid(cols=vars(Treatment),rows = vars(Antigen))
+```
+
+```{r}
+ggplot(luminex.all.meanlog %>% filter(Experiment=="Main" & !is.na(Treatment) & Date < "2017-07-05")) +
+	geom_boxplot(aes(fill=Antigen, x=MFI_meanlog, y=Antigen),show.legend = F) + facet_grid(cols=vars(Species)) +
+	labs(title = "Serology on day of capture")
+```
+
+
+# Statistical analyses
+
+Hypothesis: antibody levels increase in response to vaccination.
+
+Due to the small sample size with *Epomophorus*, we only test for trends in *Eidolon*.
+
+## Compare final and initial MFI
+
+### Nipah G antigen
+
+For each bat, we calculate the difference between the first and last log-MFI values as a measure of net change across the experiment.
+
+```{r}
+luminex.logchange <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment)) %>% 
+	arrange(Date) %>% group_by(Bat_ID) %>% 
+	summarise(Nipah_G_first = first(Nipah_G_meanlog), 
+		    Nipah_G_logchange = last(Nipah_G_meanlog) - first(Nipah_G_meanlog), 
+		    Ebola_first = first(Ebola_meanlog), 
+		    Ebola_logchange = last(Ebola_meanlog) - first(Ebola_meanlog)) %>%
+	left_join(bat.main.table,by="Bat_ID")
+```
+
+```{r}
+ggplot(luminex.logchange) + geom_boxplot(aes(y=Nipah_G_logchange,x=Vaccination_Group)) + geom_point(aes(y=Nipah_G_logchange,x=Vaccination_Group))
+```
+
+Comparing log-MFI changes (final-initial) in the Nipah-vaccine group vs the rest:
+
+```{r}
+with(luminex.logchange, wilcox.test(Nipah_G_logchange[Vaccination_Group=="NIPAH"],Nipah_G_logchange[Vaccination_Group!="NIPAH"]))
+```
+
+Testing for association between initial log-MFI values and change in log-MFI values:
+
+```{r}
+ggplot(luminex.logchange) + geom_point(aes(x=Nipah_G_first, y=Nipah_G_logchange, color=Vaccination_Group)) 
+```
+
+Nipah-vaccine group only:
+
+```{r}
+with(luminex.logchange %>% filter(Vaccination_Group=="NIPAH"), cor.test(Nipah_G_first,Nipah_G_logchange))
+```
+
+All bats:
+
+```{r}
+with(luminex.logchange, cor.test(Nipah_G_first,Nipah_G_logchange))
+```
+
+### Ebola antigen
+
+```{r}
+ggplot(luminex.logchange) + geom_boxplot(aes(y=Ebola_logchange,x=Vaccination_Group)) + geom_point(aes(y=Ebola_logchange,x=Vaccination_Group))
+```
+
+Comparing log-MFI changes (final-initial) in the Ebola-vaccine group vs the rest:
+
+```{r}
+with(luminex.logchange, wilcox.test(Ebola_logchange[Vaccination_Group=="EBOLA"],Ebola_logchange[Vaccination_Group!="EBOLA"]))
+```
+
+### Other antigens
+
+```{r}
+luminex.all.logchange <- luminex.all.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment)) %>% 
+	arrange(Date) %>% group_by(Bat_ID, Antigen) %>% 
+	summarise(MFI_logchange = last(MFI_meanlog) - first(MFI_meanlog)) %>%
+	left_join(bat.main.table,by="Bat_ID")
+```
+
+```{r}
+ggplot(luminex.all.logchange) + geom_boxplot(aes(x=Vaccination_Group, y=MFI_logchange, fill=Antigen)) 
+```
+
+## Compare final and initial MFI - average of two dates
+
+To account for daily variations, we repeated the above analysis, this time comparing the average log-MFI values for the first two sampling dates vs the average for the last two sampling dates.
+
+```{r}
+luminex.logchange.2 <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment)) %>% 
+	arrange(Date) %>% 
+	group_by(Bat_ID) %>% 
+	summarise(Nipah_G_first = (first(Nipah_G_meanlog) + nth(Nipah_G_meanlog,2))/2, 
+		    Nipah_G_logchange = (last(Nipah_G_meanlog) + nth(Nipah_G_meanlog,-2) - first(Nipah_G_meanlog) - nth(Nipah_G_meanlog,2))/2, 
+		    Ebola_first = (first(Ebola_meanlog) + nth(Ebola_meanlog,2))/2, 
+		    Ebola_logchange = (last(Ebola_meanlog) + nth(Ebola_meanlog,-2) - first(Ebola_meanlog) - nth(Ebola_meanlog,2))/2) %>% 
+	left_join(bat.main.table,by="Bat_ID")
+```
+
+### Nipah G antigen
+
+```{r}
+ggplot(luminex.logchange.2) + geom_boxplot(aes(y=Nipah_G_logchange,x=Vaccination_Group)) + geom_point(aes(y=Nipah_G_logchange,x=Vaccination_Group))
+```
+
+Nipah-vaccine group vs other bats:
+
+```{r}
+with(luminex.logchange.2, wilcox.test(Nipah_G_logchange[Vaccination_Group=="NIPAH"],Nipah_G_logchange[Vaccination_Group!="NIPAH"]))
+```
+
+
+### Ebola antigen
+
+```{r}
+ggplot(luminex.logchange.2) + geom_boxplot(aes(y=Ebola_logchange,x=Vaccination_Group)) + geom_point(aes(y=Ebola_logchange,x=Vaccination_Group)) + ylim(-1,0.5)
+```
+
+```{r}
+with(luminex.logchange.2, wilcox.test(Ebola_logchange[Vaccination_Group=="EBOLA"],Ebola_logchange[Vaccination_Group!="EBOLA"]))
+```
+
+## Compare pre-booster and initial MFI
+
+Next, we tested for changes in log-MFI values between the first sample and the last sample taken before the second injection (booster).
+
+```{r}
+luminex.prime.logchange <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment) & Date < "2017-08-08") %>% 
+	arrange(Date) %>% group_by(Bat_ID) %>% 
+	summarise(Nipah_G_first = first(Nipah_G_meanlog), 
+		    Nipah_G_logchange = last(Nipah_G_meanlog) - first(Nipah_G_meanlog), 
+		    Ebola_first = first(Ebola_meanlog), 
+		    Ebola_logchange = last(Ebola_meanlog) - first(Ebola_meanlog)) %>% 
+	left_join(bat.main.table,by="Bat_ID")
+```
+
+### Nipah G antigen
+
+```{r}
+ggplot(luminex.prime.logchange) + geom_boxplot(aes(y=Nipah_G_logchange,x=Vaccination_Group)) + geom_point(aes(y=Nipah_G_logchange,x=Vaccination_Group))
+```
+
+Nipah-vaccine group vs other bats:
+
+```{r}
+with(luminex.prime.logchange, wilcox.test(Nipah_G_logchange[Vaccination_Group=="NIPAH"],Nipah_G_logchange[Vaccination_Group!="NIPAH"]))
+```
+### Ebola antigen
+
+```{r}
+ggplot(luminex.prime.logchange) + geom_boxplot(aes(y=Ebola_logchange,x=Vaccination_Group)) + geom_point(aes(y=Ebola_logchange,x=Vaccination_Group))
+```
+
+Ebola-vaccine group vs other bats:
+
+```{r}
+with(luminex.prime.logchange, wilcox.test(Ebola_logchange[Vaccination_Group=="EBOLA"],Ebola_logchange[Vaccination_Group!="EBOLA"]))
+```
+
+## Compare final and pre-booster MFI
+
+Finally, we test for change in log-MFI values following the second injection.
+
+```{r}
+luminex.boost.logchange <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment) & Date > "2017-08-07") %>% 
+	arrange(Date) %>% group_by(Bat_ID) %>% 
+	summarise(Nipah_G_first = first(Nipah_G_meanlog), 
+		    Nipah_G_logchange = last(Nipah_G_meanlog) - first(Nipah_G_meanlog), 
+		    Ebola_first = first(Ebola_meanlog), 
+		    Ebola_logchange = last(Ebola_meanlog) - first(Ebola_meanlog)) %>% 
+	left_join(bat.main.table,by="Bat_ID")
+```
+
+### Nipah G antigen
+
+```{r}
+ggplot(luminex.boost.logchange) + geom_boxplot(aes(y=Nipah_G_logchange,x=Vaccination_Group)) + geom_point(aes(y=Nipah_G_logchange,x=Vaccination_Group))
+```
+
+```{r}
+with(luminex.boost.logchange, wilcox.test(Nipah_G_logchange[Vaccination_Group=="NIPAH"],Nipah_G_logchange[Vaccination_Group!="NIPAH"]))
+```
+
+### Ebola antigen
+
+```{r}
+ggplot(luminex.boost.logchange) + geom_boxplot(aes(y=Ebola_logchange,x=Vaccination_Group)) + geom_point(aes(y=Ebola_logchange,x=Vaccination_Group))
+```
+
+```{r}
+with(luminex.boost.logchange, wilcox.test(Ebola_logchange[Vaccination_Group=="EBOLA"],Ebola_logchange[Vaccination_Group!="EBOLA"]))
+```
+
+## Mixed-effect model
+
+As an alternative method to detect changes in antibody levels throughout the course of the experiment, we used a mixed-effect linear model with vaccine group as an independent variable, day as a random variable (to account for repeated measurements) and log-MFI as the response variable.
+
+As before, we tested log-MFI for Nipah and Ebola antigens separately, in each case comparing the bats receiving the matching vaccine to the rest.
+
+### Nipah G antigen
+
+```{r}
+eidolon.Nipah_G.meanlog <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment)) %>% 
+	mutate(Group=ifelse(Treatment=="NIPAH","Nipah_G_vaccine","Control"),
+		 Day = as.numeric(Date-min(Date)))
+	
+eidolon.Nipah_G.lme <- lme(Nipah_G_meanlog ~ Group*Day, eidolon.Nipah_G.meanlog, random= ~Day|Bat_ID)
+
+summary(eidolon.Nipah_G.lme)
+```
+
+Plotting the residuals:
+
+```{r}
+plot(eidolon.Nipah_G.lme, resid(.) ~ fitted(.)|Group, abline=0) 
+```
+
+### Ebola antigen
+
+```{r}
+eidolon.ebola.meanlog <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment)) %>% 
+	mutate(Group=ifelse(Treatment=="EBOLA","Ebola_vaccine","Control"),
+		 Day = as.numeric(Date-min(Date)))
+	
+eidolon.ebola.lme <- lme(Ebola_meanlog ~ Group*Day, eidolon.ebola.meanlog, random= ~Day|Bat_ID)
+```
+
+```{r}
+summary(eidolon.ebola.lme)
+```
+
+```{r}
+plot(eidolon.ebola.lme, resid(.) ~ fitted(.)|Group, abline=0) 
+```
+
+
+## Mixed-effect model (pre-booster)
+
+We then repeated the analysis just for the pre-booster time period.
+
+```{r}
+eidolon.Nipah_G.prime.meanlog <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment) & Date < "2017-08-08") %>% 
+	mutate(Group=ifelse(Treatment=="NIPAH","Nipah_G_vaccine","Control"),
+		 Day = as.numeric(Date-min(Date)))
+	
+eidolon.Nipah_G.prime.lme <- lme(Nipah_G_meanlog ~ Group*Day, eidolon.Nipah_G.prime.meanlog, random= ~Day|Bat_ID)
+```
+
+```{r}
+summary(eidolon.Nipah_G.prime.lme)
+```
+
+```{r}
+plot(eidolon.Nipah_G.prime.lme, resid(.) ~ fitted(.)|Group, abline=0) 
+```
+
+```{r}
+eidolon.ebola.prime.meanlog <- luminex.meanlog %>% 
+	filter(Species == "Eidolon_helvum" & Experiment=="Main" & !is.na(Treatment) & Date < "2017-08-08") %>% 
+	mutate(Group=ifelse(Treatment=="EBOLA","Ebola_vaccine","Control"),
+		 Day = as.numeric(Date-min(Date)))
+	
+eidolon.ebola.prime.lme <- lme(Ebola_meanlog ~ Group*Day, eidolon.ebola.prime.meanlog, random= ~Day|Bat_ID)
+
+summary(eidolon.ebola.prime.lme)
+```
+
+```{r}
+plot(eidolon.ebola.prime.lme, resid(.) ~ fitted(.)|Group, abline=0) 
+```
+
+# Pseudotype neutralisation assay
+
+A subset of 14 serum samples from all groups of bats were tested for anti-Nipah-G antibodies by pseudotype neutralisation assay. Here we show the correlation between Luminex (MFI values against the Nipah G antigen) and pseudotype IC50 (serum dilution required to reach 50% neutralisation). The starting dilution was 50-fold; four sera had an IC50 lower than 50-fold and are shown below with a value of 50.
+
+```{r}
+NiV.PV.data <- data.frame(
+	Species = c(rep("Eidolon",11),rep("Epomophorus",3)),
+	Group = c(rep("NIPAH",7),rep("PBS",4),rep("EBOLA",2),rep("NIPAH",1)),
+	MFI = c(476,724,666,936,402,291,2290,12,815,122,652,39,30,8510),
+	IC50 = c(447,274,1761,11530,7510,935,3026,50,1459,50,1448,50,50,16754)
+)
+```
+
+```{r}
+ggplot(NiV.PV.data) + geom_point(aes(x=log10(MFI), y=log10(IC50)))
+```
+```{r}
+with(NiV.PV.data, cor.test(log10(MFI),log10(IC50), method="pearson")) 
+```
+
+```{r}
+with(NiV.PV.data, cor.test(MFI,IC50, method="spearman")) 
+```
